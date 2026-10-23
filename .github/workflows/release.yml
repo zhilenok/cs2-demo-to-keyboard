@@ -1,0 +1,84 @@
+name: Выпустить версию
+
+# Запуск: вкладка Actions → «Выпустить версию» → Run workflow.
+# GitHub сам соберёт .exe на Windows из этого кода и создаст релиз со ссылкой на скачивание.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Номер версии, например 1.2.0"
+        required: true
+      notes:
+        description: "Что нового (пункты через точку с запятой ;)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
+      NOTES: ${{ inputs.notes }}
+      GH_TOKEN: ${{ github.token }}
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Проверка номера версии
+        shell: bash
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Номер версии должен быть вида 1.2.3"; exit 1
+          fi
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Релиз v$VERSION уже существует"; exit 1
+          fi
+
+      - name: Сборка .exe
+        shell: bash
+        run: |
+          # меняем только номер версии и адрес релизов, остальное (ссылка на донат) остаётся
+          sed -i -E "s|^VERSION = .*|VERSION = \"$VERSION\"|; s|^RELEASES_URL = .*|RELEASES_URL = \"https://github.com/$GITHUB_REPOSITORY/releases\"|" cs2keys/version.py
+          cat cs2keys/version.py
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+          python tools/build.py
+          mkdir -p release_out
+          cp "dist/CS2 Demo to Keyboard.exe" "release_out/CS2_Demo_to_Keyboard_$VERSION.exe"
+
+      - name: Описание релиза
+        shell: bash
+        run: |
+          FILE="CS2_Demo_to_Keyboard_$VERSION.exe"
+          SHA=$(sha256sum "release_out/$FILE" | cut -d' ' -f1)
+          {
+            echo "## Версия $VERSION"
+            echo
+            if [ -n "$NOTES" ]; then
+              echo "$NOTES" | tr ';' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' | sed 's/^/- /'
+            else
+              echo "- Исправления и улучшения"
+            fi
+            echo
+            echo "**Скачать:** файл \`$FILE\` ниже."
+            echo
+            echo "SHA-256: \`$SHA\`"
+          } > release_out/notes.md
+          cat release_out/notes.md
+
+      - name: Релиз на GitHub
+        shell: bash
+        run: |
+          gh release create "v$VERSION" "release_out/CS2_Demo_to_Keyboard_$VERSION.exe" \
+            --title "Версия $VERSION" --notes-file release_out/notes.md --latest
