@@ -1,0 +1,4 @@
+demoparser2>=0.40
+customtkinter>=5.2
+tkinterdnd2>=0.4
+pillow>=10
