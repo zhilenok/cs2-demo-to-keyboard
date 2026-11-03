@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import extract
+from . import errors, extract
 from .main import (App, APP, TPS, VOICE_MODES, CACHE_DIR, DATA_DIR, _extract_job, save_settings,
                    HOTKEY_ACTIONS, DEFAULT_HOTKEYS, CS2_ACTIONS, DEFAULT_CS2_KEYS)
 from .i18n import tr, set_lang
@@ -332,6 +332,83 @@ class ModernApp(App):
         x = self.root.winfo_rootx() + (self.root.winfo_width() - dlg.winfo_width()) // 2
         dlg.geometry(f"+{max(0, x)}+{max(0, self.root.winfo_rooty() + 120)}")
         dlg.after(50, lambda: (dlg.lift(), dlg.focus_force(), dlg.grab_set()))
+
+    def show_error(self, code, detail=""):
+        """Окно ошибки: код, что случилось, что делать и кнопка «Скопировать отчёт» для автора."""
+        import threading
+        self.msg(f"Ошибка {code}: {errors.title(code)}")
+        old = getattr(self, "_err_dlg", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except Exception:
+                pass
+        dlg = ctk.CTkToplevel(self.root)
+        self._err_dlg = dlg
+        dlg.title(f"{APP} — {code}")
+        dlg.configure(fg_color=CARD)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        head = ctk.CTkFrame(dlg, fg_color="transparent")
+        head.pack(fill="x", padx=22, pady=(18, 4))
+        ctk.CTkLabel(head, text=f" {code} ", font=font(13, "bold"), text_color="#ffffff", fg_color=LOSS,
+                     corner_radius=6).pack(side="left")
+        self.label(head, errors.title(code), 16, "bold", TEXT, anchor="w").pack(side="left", padx=10)
+        if detail:
+            self.label(dlg, detail, 11, anchor="w", justify="left", wraplength=460).pack(anchor="w", padx=22)
+        self.label(dlg, "Что делать:", 12, "bold", TEXT, anchor="w").pack(anchor="w", padx=22, pady=(10, 2))
+        for i, h in enumerate(errors.hints(code), 1):
+            self.label(dlg, f"{i}. {tr(h)}", 12, anchor="w", justify="left", wraplength=460, color=TEXT
+                       ).pack(anchor="w", padx=22, pady=1)
+        cause = self.label(dlg, "", 12, "bold", anchor="w", justify="left", wraplength=460, color=T_COL)
+        note = self.label(dlg, "Не помогло? Нажмите «Скопировать отчёт» и пришлите текст автору — в комментарии "
+                               "Telegram-канала или в Issues на GitHub. В отчёте нет личных данных.",
+                          11, anchor="w", justify="left", wraplength=460)
+        note.pack(anchor="w", padx=22, pady=(10, 0))
+        row = ctk.CTkFrame(dlg, fg_color="transparent")
+        row.pack(fill="x", padx=18, pady=16)
+        state = {"report": None}
+
+        def build():
+            try:
+                rep, hint = self.make_report(code, detail)
+            except Exception as e:
+                rep, hint = f"{code}: {errors.title(code)}\n{detail}\n(отчёт не собрался: {e})", None
+            state["report"] = rep
+
+            def put():
+                try:
+                    if hint and dlg.winfo_exists():
+                        cause.configure(text=tr("Возможная причина: ") + hint)
+                        cause.pack(anchor="w", padx=22, pady=(8, 0), before=note)
+                except Exception:
+                    pass
+            self.ui(put)
+        threading.Thread(target=build, daemon=True).start()
+
+        def copy():
+            rep = state["report"]
+            if rep is None:
+                rep = self.make_report(code, detail)[0]
+            self.root.clipboard_clear()
+            self.root.clipboard_append(rep)
+            copy_btn.configure(text=tr("✓ Скопировано"))
+            dlg.after(2500, lambda: copy_btn.winfo_exists() and copy_btn.configure(text=tr("Скопировать отчёт")))
+
+        def close():
+            try:
+                dlg.grab_release()
+            except Exception:
+                pass
+            dlg.destroy()
+        copy_btn = self.btn(row, "Скопировать отчёт", copy, primary=True)
+        copy_btn.pack(side="left", padx=4)
+        self.btn(row, "Закрыть", close, width=90).pack(side="right", padx=4)
+        dlg.protocol("WM_DELETE_WINDOW", close)
+        dlg.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - dlg.winfo_width()) // 2
+        dlg.geometry(f"+{max(0, x)}+{max(0, self.root.winfo_rooty() + 100)}")
+        dlg.after(50, lambda: (dlg.lift(), dlg.focus_force()))
 
     def _vpanel_size(self):
         v = round(float(self.vscale_var.get()), 2)
@@ -852,10 +929,33 @@ class ModernApp(App):
             e.bind("<FocusOut>", lambda ev: (self._save_numbers(), self._port_changed()))
             e.bind("<Return>", lambda ev: (self._save_numbers(), self._port_changed()))
             self.label(fr, hint, 11).grid(row=i, column=2, sticky="w")
+        pr = ctk.CTkFrame(s4, fg_color="transparent")
+        pr.pack(fill="x", pady=(8, 2))
+        self.label(pr, "Сверка с CS2, раз в", 12, color=TEXT).pack(side="left", padx=(0, 8))
+        en = i18n.LANG == "en"
+        probe_vals = {(f"{v:g} s" if en else f"{v:g} с".replace(".", ",")): v for v in (0.5, 1.0, 1.5, 3.0)}
+        cur = min(probe_vals, key=lambda k: abs(probe_vals[k] - float(self.s.get("probe", 1.0) or 1.0)))
+
+        def set_probe(v):
+            self.s["probe"] = probe_vals.get(v, 1.0)
+            save_settings(self.s)
+        seg = ctk.CTkSegmentedButton(pr, values=list(probe_vals), command=set_probe,
+                                     selected_color=ACC, selected_hover_color=ACC_H,
+                                     unselected_color=CARD2, unselected_hover_color=LINE,
+                                     fg_color=CARD2, text_color=TEXT, font=font(12, "bold"))
+        seg.set(cur)
+        seg.pack(side="left")
+        self.label(s4, "Чаще — клавиатура точнее держится за игрой, но CS2 каждый раз встаёт на паузу на долю "
+                       "кадра: на слабом ПК возможны микрорывки и щелчки в голосе.", 11, anchor="w",
+                   justify="left", wraplength=520).pack(anchor="w", pady=(0, 4))
         self.tools_var = tk.BooleanVar(value=bool(self.s.get("use_tools", True)))
         self.switch(s4, "Запускать CS2 через Workshop Tools (нужно для консоли на Windows)", self.tools_var,
                     lambda: (self.s.__setitem__("use_tools", bool(self.tools_var.get())), save_settings(self.s))
                     ).pack(anchor="w", pady=(8, 2))
+        self.unmute_var = tk.BooleanVar(value=bool(self.s.get("unmute_demo", True)))
+        self.switch(s4, "Слышать замученных игроков в демо (мут вернётся после закрытия CS2)", self.unmute_var,
+                    lambda: (self.s.__setitem__("unmute_demo", bool(self.unmute_var.get())), save_settings(self.s))
+                    ).pack(anchor="w", pady=(2, 2))
         self.btn(s4, "Сохранить файл клавиатуры…", self.save_keys, height=30).pack(anchor="w", pady=(8, 4))
         self.save_btn = ctk.CTkButton(root)          # совместимость с общей логикой
         self.label(s4, "Консоль CS2", 11, "bold").pack(anchor="w", pady=(6, 2))

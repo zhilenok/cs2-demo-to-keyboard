@@ -5,6 +5,11 @@ import collections, re, socket, threading, time
 PROBLEMS = ("unknown command", "not playing", "no demo", "couldn't", "could not", "failed",
             "can't", "cannot", "not found")
 NOISE = ("CSVCMsg_UserCommands", "SetConVar")
+# посторонние сообщения CS2, в которых есть «failed», но к демо и командам они не относятся
+BENIGN = ("clocalize", "failed to localize", "#panorama", "shader", "texture", "material", "sound",
+          "steam_api", "workshop", "vpk", "font", "particle", "resource")
+# признаки того, что не открылось именно демо
+DEMO_WORDS = ("demo", ".dem", "playdemo")
 PAUSE_RE = re.compile(r"\b(un)?paused on tick (\d+)", re.I)
 ACTION_RE = re.compile(r"CS2KEYS:(\w+)")
 # CS2 пишет это в консоль, когда демо загрузилось и пошла картинка
@@ -150,7 +155,18 @@ class Netcon:
         return self.wait_for(tag, seq, timeout)
 
     def problems(self, seq):
-        return [t for t in self.since(seq) if any(p in t.lower() for p in PROBLEMS) and "sync_" not in t.lower()]
+        out = []
+        for t in self.since(seq):
+            low = t.lower()
+            if "sync_" in low or any(b in low for b in BENIGN):
+                continue
+            if any(p in low for p in PROBLEMS):
+                out.append(t)
+        return out
+
+    def demo_problems(self, seq):
+        """Только ошибки открытия демо (а не любые предупреждения консоли)."""
+        return [t for t in self.problems(seq) if any(w in t.lower() for w in DEMO_WORDS)]
 
     def recent(self, n=80):
         with self.cond:

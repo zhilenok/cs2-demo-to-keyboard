@@ -5,6 +5,48 @@ import re
 LANG = "ru"
 
 EN = {
+    "Сверка с CS2, раз в": "Sync check with CS2 every",
+    "Чаще — клавиатура точнее держится за игрой, но CS2 каждый раз встаёт на паузу на долю кадра: на слабом ПК возможны микрорывки и щелчки в голосе.": "More often keeps the keyboard closer to the game, but CS2 pauses for a split frame each time: on a weak PC this may cause micro-stutters and clicks in voice.",
+    "Слышать замученных игроков в демо (мут вернётся после закрытия CS2)": "Hear muted players in demos (the mute returns after CS2 closes)",
+    "Steam не запущен": "Steam is not running",
+    "Откройте Steam и войдите в аккаунт.": "Open Steam and sign in.",
+    "Потом снова нажмите «Запустить CS2 и демо».": "Then press “Launch CS2 & demo” again.",
+    "Не удалось закрыть CS2": "Could not close CS2",
+    "Закройте CS2 вручную: Диспетчер задач (Ctrl+Shift+Esc) → cs2.exe → «Снять задачу».": "Close CS2 manually: Task Manager (Ctrl+Shift+Esc) → cs2.exe → “End task”.",
+    "CS2 закрылась во время запуска": "CS2 closed while starting",
+    "Steam → CS2 → Свойства → Установленные файлы → «Проверить целостность файлов».": "Steam → CS2 → Properties → Installed Files → “Verify integrity of game files”.",
+    "Проверьте, что Counter-Strike 2 Workshop Tools установлены и обновлены (Свойства → Дополнительный контент).": "Make sure Counter-Strike 2 Workshop Tools are installed and up to date (Properties → DLC).",
+    "Попробуйте выключить «Запускать CS2 через Workshop Tools» в настройках программы.": "Try turning off “Launch CS2 via Workshop Tools” in the app settings.",
+    "Обновите драйвер видеокарты и закройте оверлеи (MSI Afterburner / RivaTuner, Discord).": "Update your graphics driver and close overlays (MSI Afterburner / RivaTuner, Discord).",
+    "CS2 закрылась во время загрузки демо": "CS2 closed while loading the demo",
+    "Откройте эту демку без программы (консоль CS2: playdemo). Если вылетает и так — демка повреждена или записана на старой версии CS2: после крупных обновлений старые демки не открываются.": "Open this demo without the app (CS2 console: playdemo). If it crashes too, the demo is damaged or was recorded on an older CS2 version: old demos often stop working after major updates.",
+    "Демо FACEIT: проверьте, что архив .dem.zst распакован полностью, или скачайте его заново.": "FACEIT demo: make sure the .dem.zst archive is fully unpacked, or download it again.",
+    "Проверьте целостность файлов CS2 в Steam.": "Verify the integrity of CS2 files in Steam.",
+    "CS2 закрылась во время просмотра": "CS2 closed during playback",
+    "Запустите демо ещё раз — разовые вылеты CS2 бывают и без программы.": "Run the demo again — one-off CS2 crashes happen without the app too.",
+    "CS2 не ответила программе": "CS2 did not respond to the app",
+    "Если открылось окно Workshop Tools — нажмите в нём «Launch Tools».": "If the Workshop Tools window opened, press “Launch Tools” in it.",
+    "Проверьте, что Counter-Strike 2 Workshop Tools установлены.": "Make sure Counter-Strike 2 Workshop Tools are installed.",
+    "Порт консоли может быть занят другой программой — смените его в настройках (например, 2122).": "The console port may be used by another program — change it in settings (e.g. 2122).",
+    "CS2 не смогла открыть демо": "CS2 could not open the demo",
+    "Проверьте, что файл демо на месте и не переименован.": "Make sure the demo file is still there and not renamed.",
+    "Откройте демку без программы (консоль CS2: playdemo), чтобы проверить, открывается ли она вообще.": "Open the demo without the app (CS2 console: playdemo) to check whether it opens at all.",
+    "Старые демки после крупных обновлений CS2 часто не открываются.": "Old demos often stop opening after major CS2 updates.",
+    "Не удалось прочитать демо": "Could not read the demo",
+    "Проверьте, что это демо CS2 (.dem), а не CS:GO.": "Make sure it is a CS2 demo (.dem), not CS:GO.",
+    "Демо FACEIT сначала распакуйте из .dem.zst (7-Zip).": "Unpack FACEIT demos from .dem.zst first (7-Zip).",
+    "Если файл скачался не полностью — скачайте его заново.": "If the file did not download completely, download it again.",
+    "Не удалось извлечь нажатия игрока": "Could not extract the player's inputs",
+    "Попробуйте выбрать другого игрока.": "Try picking another player.",
+    "Если ошибка повторяется на этой демке — пришлите отчёт автору.": "If it keeps happening with this demo, send the report to the author.",
+    "Что делать:": "What to do:",
+    "Возможная причина: ": "Possible cause: ",
+    "Скопировать отчёт": "Copy report",
+    "✓ Скопировано": "✓ Copied",
+    "Отчёт скопирован — отправьте его автору.": "The report is copied — send it to the author.",
+    "Не помогло? Нажмите «Скопировать отчёт» и пришлите текст автору — в комментарии Telegram-канала или в Issues на GitHub. В отчёте нет личных данных.": "Didn't help? Press “Copy report” and send the text to the author — in the Telegram channel comments or GitHub Issues. The report contains no personal data.",
+    "CS2 закрыта.": "CS2 was closed.",
+    "Ошибка": "Error",
     # --- стартовый экран ---
     "Нажатия игрока из демо — поверх игры и синхронно с ней": "A player's inputs from a demo — on top of the game, in sync",
     "Открыть демо": "Open demo",
@@ -118,6 +160,8 @@ EN = {
     "CS2 запущена, загружаю демо…": "CS2 is up, loading the demo…",
     "Закрываю CS2…": "Closing CS2…",
     "Запускаю CS2 с параметрами для демо…": "Launching CS2 with demo parameters…",
+    "Steam не запущен — запускаю Steam…": "Steam is not running — starting Steam…",
+    "Steam не запустился. Откройте Steam, войдите в аккаунт и нажмите ещё раз": "Steam did not start. Open Steam, sign in and try again",
     "Жду CS2… Если открылось окно Workshop Tools, нажмите в нём «Launch Tools».":
         "Waiting for CS2… If the Workshop Tools window opened, click “Launch Tools”.",
     "Где находится cs2.exe?": "Where is cs2.exe?",
@@ -186,6 +230,7 @@ PATTERNS = [
     (r"Голос: (.+)", r"Voice: \1"),
     (r"Не удалось прописать бинды: (.+)", r"Could not set binds: \1"),
     (r"Запускаю CS2… (\d+) с", r"Launching CS2… \1 s"),
+    (r"Жду вход в Steam… (\d+) с", r"Waiting for Steam sign-in… \1 s"),
     (r"Заняты другой программой: (.+)", r"Taken by another program: \1"),
     (r"порт (\d+) закрыт: запустите CS2 через Workshop Tools с -netconport (\d+)",
      r"port \1 is closed: start CS2 via Workshop Tools with -netconport \2"),
@@ -206,6 +251,15 @@ def tr(s):
         return s
     if s in EN:
         return EN[s]
+    m = re.fullmatch(r"Временно сняли мут с игроков демо: (\d+)\. После закрытия CS2 мут вернётся\.", s)
+    if m:
+        return f"Temporarily unmuted demo players: {m.group(1)}. The mute returns after CS2 closes."
+    m = re.fullmatch(r"код выхода (0x[0-9a-fA-F]+)", s)
+    if m:
+        return "exit code " + m.group(1)
+    m = re.fullmatch(r"Ошибка (E\d+): (.+)", s, flags=re.S)
+    if m:
+        return f"Error {m.group(1)}: " + tr(m.group(2))
     for pat, rep in PATTERNS:
         m = re.fullmatch(pat, s, flags=re.S)
         if m:

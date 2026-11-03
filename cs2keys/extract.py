@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 TPS = 64
-FORMAT_VERSION = 9
+FORMAT_VERSION = 10
 
 # (бит в сырой команде клиента usercmd_buttonstate_1, ключ). Порядок = номер бита в нашей маске.
 BITS = [(3, "W"), (9, "A"), (4, "S"), (10, "D"), (1, "SPACE"), (2, "CTRL"), (16, "SHIFT"),
@@ -82,21 +82,63 @@ def scan(path):
 
     teams, slots = {}, {}
     if rounds:
-        tn = p.parse_ticks(["team_num", "user_id"], ticks=[r["f"] for r in rounds])
+        # Слот игрока (для фильтра голоса tv_listen_voice_indices) = индекс его контроллера − 1.
+        # Берём его из ссылки на контроллер: user_id из таблицы игроков после перезахода
+        # может остаться старым, и тогда фильтр пропускал не тех людей.
+        # Смотрим начало раунда (конец заморозки) и его конец — на случай перезахода посреди раунда.
+        ticks = sorted({r["f"] for r in rounds} | {max(r["f"], r["e"] - 2) for r in rounds})
+        tn = _slots_frame(p, ticks)
         for _, r in tn.iterrows():
-            tk, sid = int(r["tick"]), str(r["steamid"])
-            teams.setdefault(tk, {})[sid] = int(r["team_num"] or 0)
-            try:
-                slots.setdefault(tk, {})[sid] = int(r["user_id"])      # номер слота игрока (для голоса)
-            except (TypeError, ValueError):
-                pass
+            tk, sid, tm = int(r["tick"]), str(r["steamid"]), r["team_num"]
+            if tm is None or tm != tm or sid in ("0", "nan", "None"):
+                continue                                   # строка без игрока (пустой слот)
+            teams.setdefault(tk, {})[sid] = int(tm or 0)
+            sl = _slot_of(r)
+            if sl is not None:
+                slots.setdefault(tk, {})[sid] = sl
     for r in rounds:
         r["teams"] = teams.get(r["f"], {})
-        r["slots"] = slots.get(r["f"], {})
+        both = {}
+        for tk in (r["f"], max(r["f"], r["e"] - 2)):
+            tm_at = teams.get(tk, {})
+            for sid, sl in slots.get(tk, {}).items():
+                tm = tm_at.get(sid)
+                if tm in (2, 3):
+                    both.setdefault(sid, {})[sl] = tm
+        r["slots"] = {sid: [[sl, tm] for sl, tm in sorted(v.items())] for sid, v in both.items()}
 
     end = (ends[-1][0] + 5 * TPS) if ends else 0
     return {"path": os.path.abspath(path), "map": header.get("map_name", ""), "players": players,
             "rounds": rounds, "end": end, "voice": voice_intervals(p)}
+
+
+HANDLE_PROP = "CCSPlayerController.m_hOriginalControllerOfCurrentPawn"
+
+
+def _slots_frame(p, ticks):
+    try:
+        return p.parse_ticks(["team_num", "user_id", HANDLE_PROP], ticks=ticks)
+    except Exception:
+        return p.parse_ticks(["team_num", "user_id"], ticks=ticks)
+
+
+def _slot_of(row):
+    """Номер слота игрока: по ссылке на контроллер, а если её нет — по user_id."""
+    try:
+        h = row.get(HANDLE_PROP)
+        if h is not None and h == h:
+            idx = int(h) & 0x3FFF
+            if 1 <= idx <= 64:
+                return idx - 1
+    except (TypeError, ValueError):
+        pass
+    try:
+        u = row.get("user_id")
+        if u is not None and u == u and 0 <= int(u) < 64:
+            return int(u)
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 # запас патронов в начале (CS2): точного значения в демо нет — считаем от полного запаса и вычитаем перезарядки
@@ -230,12 +272,19 @@ def extract_player(path, steamid, info=None):
     rounds = []
     for r in info["rounds"]:
         team = r["teams"].get(str(steamid))
-        sl = r.get("slots", {})
+        t_sl, ct_sl = set(), set()
+        for s, lst in r.get("slots", {}).items():
+            if not isinstance(lst, list):                 # старый формат обзора: один слот на игрока
+                lst = [[lst, r["teams"].get(s)]]
+            for sl, tm in lst:
+                if tm == 2:
+                    t_sl.add(int(sl))
+                elif tm == 3:
+                    ct_sl.add(int(sl))
         rounds.append({"n": r["n"], "s": r["s"], "f": r["f"], "e": r["e"], "team": team, "winner": r["winner"],
                        "sides": r["teams"],
                        "won": (team == r["winner"]) if team in (2, 3) else None,
-                       "t_slots": sorted(sl[s] for s, tm in r["teams"].items() if tm == 2 and s in sl),
-                       "ct_slots": sorted(sl[s] for s, tm in r["teams"].items() if tm == 3 and s in sl)})
+                       "t_slots": sorted(t_sl), "ct_slots": sorted(ct_sl)})
 
     return {"format": "cs2keys", "version": FORMAT_VERSION, "precise": bool(precise),
             "demo_path": info["path"], "demo_name": os.path.basename(info["path"]), "map": info["map"],

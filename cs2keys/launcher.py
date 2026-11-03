@@ -109,13 +109,59 @@ def close_cs2(timeout=20.0):
     return not cs2_running()
 
 
+def steam_ready():
+    """Steam запущен и пользователь вошёл (Steam пишет ActiveUser в реестр)."""
+    if not IS_WIN:
+        return True
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam\ActiveProcess") as k:
+            pid = int(winreg.QueryValueEx(k, "pid")[0] or 0)
+            user = int(winreg.QueryValueEx(k, "ActiveUser")[0] or 0)
+    except Exception:
+        return False
+    if not pid or not user:
+        return False
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, creationflags=NO_WINDOW, timeout=10).stdout
+        return "steam.exe" in out.lower()
+    except Exception:
+        return True
+
+
+def ensure_steam(progress=None, timeout=180):
+    """Если Steam не запущен — запускаем его и ждём входа в аккаунт. Без Steam CS2 не стартует."""
+    if steam_ready():
+        return True
+    steam = steam_path()
+    exe = os.path.join(steam, "steam.exe") if steam else None
+    try:
+        if exe and os.path.exists(exe):
+            subprocess.Popen([exe, "-silent"], cwd=steam)
+        else:
+            os.startfile("steam://open/main")
+    except Exception:
+        return False
+    start = time.time()
+    while time.time() - start < timeout:
+        if steam_ready():
+            time.sleep(5)                      # даём Steam догрузиться после входа
+            return True
+        if progress:
+            progress(int(time.time() - start))
+        time.sleep(2)
+    return False
+
+
 def launch_cs2(exe, port=2121, tools=True):
-    """Запуск CS2 для просмотра демо. Steam должен быть запущен."""
+    """Запуск CS2 для просмотра демо. Steam должен быть запущен (см. ensure_steam)."""
     args = [exe]
     if tools:
         args.append("-tools")
         addon = find_addon(exe)
         if addon:
             args += ["-addon", addon]
-    args += ["-netconport", str(int(port)), "-insecure", "-novid"]
+    # -condebug: CS2 пишет свою консоль в game/csgo/console.log — по нему видно, на чём она упала
+    args += ["-netconport", str(int(port)), "-insecure", "-novid", "-condebug"]
     return subprocess.Popen(args, cwd=os.path.dirname(exe))

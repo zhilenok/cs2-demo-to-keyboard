@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from concurrent.futures import ProcessPoolExecutor
 
-from . import extract, launcher
+from . import errors, extract, launcher, voiceban
 from .netcon import Netcon
 from .overlay import Overlay, VoicePanel
 from .i18n import tr, set_lang, install as install_i18n
@@ -19,7 +19,7 @@ CACHE_DIR = os.path.join(DATA_DIR, "cache")
 SETTINGS = os.path.join(DATA_DIR, "settings.json")
 DEFAULTS = {"port": 2121, "offset": 0, "wait": 3.0, "speed": 1.0, "scale": 1.0, "alpha": 0.95,
             "overlay_pos": [80, 80], "overlay_on": True, "overlay_transparent": True, "follow": True, "binds_on": True, "saved_binds": {}, "voice": "off", "chat": False, "vpanel_on": True, "vpanel_pos": [80, 420], "vpanel_scale": 1.0,
-            "move_target": "kb", "lang": "ru", "hotkeys": {}, "cs2_keys": {}, "cs2_exe": "", "use_tools": True,
+            "move_target": "kb", "lang": "ru", "hotkeys": {}, "cs2_keys": {}, "cs2_exe": "", "use_tools": True, "unmute_demo": True, "probe": 1.0,
             "last_dir": ""}
 # бинды, которые программа прописывает в CS2 при подключении (и возвращает старые при выходе)
 DEMO_BINDS = [("KP_5", "demo_togglepause", "пауза"),
@@ -131,6 +131,7 @@ class App:
         self.root.after(1500, self._probe)
         self.root.after(10, self._loop)
         self.root.after(500, self._poll_cs2)
+        self._bg(self._restore_mutes)           # прошлый раз CS2 закрылась позже программы — возвращаем мут
         self.root.protocol("WM_DELETE_WINDOW", self._quit)
 
     # ================= интерфейс =================
@@ -344,7 +345,117 @@ class App:
         r.bind("<Next>", lambda e: self.next_round())
 
     def msg(self, text):
+        hist = self.__dict__.setdefault("_hist", [])
+        if not hist or not hist[-1].endswith(" " + str(text)):
+            hist.append(time.strftime("%H:%M:%S ") + str(text))
+            del hist[:-30]
         self.msg_lbl.configure(text=tr(text))
+
+    # ================= ошибки с кодами =================
+    def _report_context(self):
+        d = self.data or {}
+        ctx = {"Демо": (d.get("demo_name") or os.path.basename((self.info or {}).get("path") or "") or "—"),
+               "Карта": d.get("map") or (self.info or {}).get("map") or "—",
+               "Этап": {"launch": "запуск CS2", "loading": "загрузка демо", "watch": "просмотр"}.get(
+                   getattr(self, "_phase", ""), "—"),
+               "Workshop Tools": "да" if self.s.get("use_tools", True) else "нет",
+               "Размут игроков демо": (f"да, снято {getattr(self, '_unmuted', 0)}"
+                                       if self.s.get("unmute_demo", True) else "выключен"),
+               "Порт": self.s.get("port"),
+               "Голос": self.s.get("voice", "off"),
+               "CS2 подключена": "да" if self._cs2() else "нет"}
+        exe = self.s.get("cs2_exe") or ""
+        ctx["cs2.exe найден"] = "да" if exe and os.path.exists(exe) else "нет"
+        return ctx
+
+    def make_report(self, code, detail=""):
+        return errors.build_report(code, detail, self._report_context(), self.s.get("cs2_exe"),
+                                   getattr(self, "_hist", []))
+
+    def show_error(self, code, detail=""):
+        """Ошибка с кодом, подсказками и кнопкой «Скопировать отчёт» (здесь — простое окно Windows)."""
+        self.msg(f"Ошибка {code}: {errors.title(code)}")
+        report, hint = self.make_report(code, detail)
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(report)
+        except Exception:
+            pass
+        text = "\n".join(["• " + tr(h) for h in errors.hints(code)])
+        if hint:
+            text += "\n\n" + tr("Возможная причина: ") + hint
+        messagebox.showerror(f"{APP} — {code}", tr(errors.title(code)) + (f"\n{detail}" if detail else "")
+                             + "\n\n" + text + "\n\n" + tr("Отчёт скопирован — отправьте его автору."))
+
+    # ================= мут игроков в демо =================
+    def _unmute_players(self):
+        """CS2 закрыта: временно убираем игроков этой демки из списка замученных (voice_ban.dt)."""
+        self._unmuted = 0
+        if not self.s.get("unmute_demo", True) or not self.info:
+            return
+        try:
+            path = voiceban.file_for_user(launcher.steam_path(), voiceban.active_account())
+            n = voiceban.unmute(path, [p["steamid"] for p in self.info.get("players", [])])
+            self._unmuted = n
+            if n:
+                self.ui(lambda: self.msg(f"Временно сняли мут с игроков демо: {n}. После закрытия CS2 мут вернётся."))
+        except Exception:
+            traceback.print_exc()
+
+    def _restore_mutes(self):
+        """Возвращаем список замученных, как только CS2 закрыта."""
+        if voiceban.pending() and not launcher.cs2_running():
+            voiceban.restore()
+
+    # ================= сторож: CS2 закрылась сама =================
+    def _set_phase(self, phase):
+        self._phase, self._phase_t = phase, time.time()
+        if phase:
+            self._expect_cs2 = True
+            self._gone = 0
+
+    def _watch_cs2(self):
+        """Фоновая проверка (из _poll_cs2): если CS2, которую мы ждём, пропала — понять, вылет это или выход."""
+        if voiceban.pending() and not getattr(self, "_launching", False) \
+                and time.time() - getattr(self, "_mute_t", 0) > 10:
+            self._mute_t = time.time()
+            self._restore_mutes()                 # CS2 уже закрыта — возвращаем мут игроков
+        if not getattr(self, "_expect_cs2", False) or getattr(self, "_closing_cs2", False) \
+                or getattr(self, "_launching", False):
+            return
+        if time.time() - getattr(self, "_watch_t", 0) < 3:
+            return
+        self._watch_t = time.time()
+        if launcher.cs2_running():
+            self._gone = 0
+            return
+        self._gone = getattr(self, "_gone", 0) + 1
+        if self._gone < 2:                       # пропала на одной проверке — ждём подтверждения
+            return
+        self._expect_cs2 = False
+        try:
+            self._restore_mutes()
+        except Exception:
+            pass
+        phase = getattr(self, "_phase", "watch")
+        if phase == "loading" and time.time() - getattr(self, "_phase_t", 0) > 90:
+            phase = "watch"
+        proc = getattr(self, "_cs2_proc", None)
+        rc = proc.poll() if proc is not None else None
+        time.sleep(3)                             # Windows записывает вылет в журнал не сразу
+        crash, _ = errors.windows_crash(minutes=3)
+        crashed = bool(crash) or (rc not in (None, 0))
+        if phase == "watch" and not crashed:
+            self.ui(lambda: self.msg("CS2 закрыта."))
+            return
+        code = {"launch": "E103", "loading": "E104"}.get(phase, "E105")
+        detail = f"код выхода {rc:#x}" if isinstance(rc, int) and rc not in (0, 1) and rc > 0 else ""
+
+        def show():
+            self.playing = False
+            self._update_play_btn()
+            self.show_error(code, detail)
+        self.ui(show)
 
     def ui(self, fn):
         self.ui_q.put(fn)
@@ -384,7 +495,7 @@ class App:
         try:
             info = fut.result()
         except Exception as e:
-            return messagebox.showerror(APP, f"Не удалось прочитать демо:\n{e}")
+            return self.show_error("E201", str(e))
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
             with open(self._cache_name(path, f"scan.v{extract.FORMAT_VERSION}.json"), "w", encoding="utf-8") as f:
@@ -429,7 +540,7 @@ class App:
         try:
             data = fut.result()
         except Exception as e:
-            return messagebox.showerror(APP, f"Не удалось извлечь нажатия:\n{e}")
+            return self.show_error("E202", str(e))
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
             with open(cache, "w", encoding="utf-8") as f:
@@ -695,6 +806,8 @@ class App:
                 self.last_t = time.perf_counter()
                 self.playing = True
                 self._update_play_btn()
+                if getattr(self, "_phase", None) == "loading":
+                    self._set_phase("watch")
                 self.msg("Демо и клавиатура стартовали вместе.")
             self.ui(done)
         self._bg(job)
@@ -773,10 +886,19 @@ class App:
             if not self.syncing:
                 self.playing = True
                 self._update_play_btn()
-            self.last_probe = (gt, ts)
+            # опорная точка для замера скорости: не моложе 1,2 с, иначе при частой сверке замер неточный
+            if self.last_probe is None or ts - self.last_probe[1] >= 1.2 or gt < self.last_probe[0]:
+                self.last_probe = (gt, ts)
+
+    def _probe_ms(self):
+        try:
+            v = float(self.s.get("probe", 1.0))
+        except (TypeError, ValueError):
+            v = 1.0
+        return int(max(0.5, min(3.0, v)) * 1000)
 
     def _probe(self):
-        """Раз в 1,5 с сверяемся с CS2.
+        """Раз в секунду (настраивается: 0,5–3 с) сверяемся с CS2.
         Если запись идёт — мгновенная пауза+продолжение (0–1 тик) даёт точный тик.
         Если у нас пауза — шлём только паузу: если CS2 на самом деле играет (например, после перемотки
         ползунком в самой игре), она ответит «paused on tick N», мы сразу продолжим и догоним.
@@ -791,7 +913,7 @@ class App:
                     self._probe_paused = time.perf_counter()
                     self._send_bg("demo_pause")
         finally:
-            self.root.after(1500, self._probe)
+            self.root.after(self._probe_ms(), self._probe)
 
     def pause(self):
         self.playing = False
@@ -969,14 +1091,18 @@ class App:
             return
         cmd = 'playdemo "%s"' % path.replace("\\", "/")
 
+        self._set_phase("loading")
+
         def job():
             try:
                 seq = self.net.mark()
                 self.net.send(*self._voice_cmds(), cmd)      # голос задаём до загрузки демо
                 time.sleep(2)
-                bad = self.net.problems(seq)
-                self.ui(lambda: self.msg(("CS2 ответила: " + bad[-1]) if bad else
-                                         "Демо загружается в CS2. Когда пойдёт, нажмите «Играть»."))
+                bad = self.net.demo_problems(seq)
+                if bad:
+                    self.ui(lambda: self.show_error("E107", "CS2 ответила: " + bad[-1]))
+                else:
+                    self.ui(lambda: self.msg("Демо загружается в CS2. Когда пойдёт, нажмите «Играть»."))
             except Exception as e:
                 self.ui(lambda: self.msg("Ошибка: " + str(e)))
         self._bg(job)
@@ -1031,18 +1157,36 @@ class App:
         try:
             if close_first:
                 self.ui(lambda: self.msg("Закрываю CS2…"))
-                if not launcher.close_cs2():
-                    raise RuntimeError("не удалось закрыть CS2 — закройте её вручную и нажмите ещё раз")
-                time.sleep(2)
+                self._closing_cs2 = True
+                try:
+                    if not launcher.close_cs2():
+                        raise errors.CodedError("E102")
+                    time.sleep(2)
+                finally:
+                    self._closing_cs2 = False
+            if not launcher.steam_ready():
+                self.ui(lambda: self.msg("Steam не запущен — запускаю Steam…"))
+                if not launcher.ensure_steam(
+                        progress=lambda el: self.ui(lambda el=el: self.msg(f"Жду вход в Steam… {el} с"))):
+                    raise errors.CodedError("E101")
+            self._unmute_players()
             self.ui(lambda: self.msg("Запускаю CS2 с параметрами для демо…"))
-            launcher.launch_cs2(exe, self.net.port, tools=bool(self.s.get("use_tools", True)))
+            self._set_phase("launch")
+            self._cs2_proc = launcher.launch_cs2(exe, self.net.port, tools=bool(self.s.get("use_tools", True)))
             self._launched_by_us = True
             start = time.time()
             hinted = False
+            gone = 0
             while time.time() - start < 400:
                 if self.net.connected:
                     break
                 el = int(time.time() - start)
+                if el > 8:                       # CS2 пропала, не успев открыть консоль — вылет при запуске
+                    gone = 0 if launcher.cs2_running() else gone + 1
+                    if gone >= 3:
+                        rc = self._cs2_proc.poll() if self._cs2_proc else None
+                        self._expect_cs2 = False
+                        raise errors.CodedError("E103", f"код выхода {rc:#x}" if isinstance(rc, int) and rc > 1 else "")
                 if el > 45 and not hinted:
                     hinted = True
                     self.ui(lambda: self.msg("Жду CS2… Если открылось окно Workshop Tools, нажмите в нём «Launch Tools»."))
@@ -1050,7 +1194,7 @@ class App:
                     self.ui(lambda el=el: self.msg(f"Запускаю CS2… {el} с"))
                 time.sleep(2)
             else:
-                raise RuntimeError("CS2 не открыла консольный порт — проверьте, что игра запустилась")
+                raise errors.CodedError("E106", "консольный порт не открылся за 400 с")
             # игра открыла порт, ждём, пока консоль начнёт выполнять команды
             self.ui(lambda: self.msg("CS2 запущена, загружаю демо…"))
             for _ in range(60):
@@ -1062,6 +1206,9 @@ class App:
                 time.sleep(2)
             time.sleep(3)
             self.ui(self.load_demo)
+        except errors.CodedError as e:
+            self._launching = False
+            self.ui(lambda: self.show_error(e.code, e.detail))
         except Exception as e:
             self.ui(lambda: self.msg("Ошибка: " + str(e)))
         finally:
@@ -1101,10 +1248,24 @@ class App:
             err = self.net.last_error
             lines = self.net.recent(40)
             self.ui(lambda: self._cs2_status(ok, err, lines))
-        self._bg(job)
+            try:
+                self._watch_cs2()
+            except Exception:
+                traceback.print_exc()
+        if not getattr(self, "_poll_busy", False):
+            self._poll_busy = True
+
+            def wrapped():
+                try:
+                    job()
+                finally:
+                    self._poll_busy = False
+            self._bg(wrapped)
         self.root.after(1500, self._poll_cs2)
 
     def _cs2_status(self, ok, err, lines):
+        if ok and not getattr(self, "_expect_cs2", False) and not getattr(self, "_launching", False):
+            self._set_phase("watch")              # CS2 подключилась (в том числе запущенная вручную)
         if ok and not getattr(self, "_was_ok", False):
             if self.s.get("voice", "off") != "off" or self.chat_var.get():
                 self.apply_voice(quiet=True)
@@ -1140,6 +1301,8 @@ class App:
         if t is None or ct is None:
             return -1, -1              # старый файл без слотов — включаем всех
         team = r.get("team")
+        if team not in (2, 3):
+            team = self._team_guess(r)
         pick = {"t": t, "ct": ct,
                 "mine": t if team == 2 else ct,
                 "enemy": ct if team == 2 else t}[mode]
@@ -1151,6 +1314,22 @@ class App:
                 hi |= 1 << (sl - 32)
         to_i32 = lambda v: v - (1 << 32) if v >= (1 << 31) else v     # CS2 читает значение как int32 со знаком
         return to_i32(lo), to_i32(hi)
+
+    def _team_guess(self, r):
+        """Игрока нет в этом раунде (вышел): его сторона = сторона его тиммейтов из ближайшего раунда."""
+        i = self.rounds.index(r) if r in self.rounds else 0
+        for j in sorted(range(len(self.rounds)), key=lambda k: abs(k - i)):
+            rj = self.rounds[j]
+            tj = rj.get("team")
+            if tj not in (2, 3):
+                continue
+            mates = [sid for sid, tm in (rj.get("sides") or {}).items() if tm == tj]
+            now = [(r.get("sides") or {}).get(sid) for sid in mates]
+            now = [x for x in now if x in (2, 3)]
+            if now:
+                return max(set(now), key=now.count)
+            return tj
+        return 2
 
     def _voice_cmds(self):
         lo, hi = self._voice_mask()
@@ -1547,6 +1726,7 @@ class App:
         if self.s.get("saved_binds") and self._cs2():
             self.restore_binds(wait=True)
         # CS2, запущенную программой, закрываем: параметры для демо действуют только на этот запуск
+        self._expect_cs2 = False
         if getattr(self, "_launched_by_us", False) and launcher.cs2_running():
             if messagebox.askyesno(APP, "Закрыть CS2, запущенную для просмотра демо?\n"
                                         "В этом режиме игра не пускает в матчмейкинг — для обычной игры "
@@ -1557,6 +1737,14 @@ class App:
                 except Exception:
                     pass
         save_settings(self.s)
+        try:
+            for _ in range(10):                   # CS2 закрывается — ждём и возвращаем мут игроков
+                if not voiceban.pending() or not launcher.cs2_running():
+                    break
+                time.sleep(0.5)
+            self._restore_mutes()
+        except Exception:
+            pass
         try:
             self.pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
