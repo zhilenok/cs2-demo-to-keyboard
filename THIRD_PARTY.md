@@ -12,6 +12,8 @@
 | [NumPy](https://numpy.org/), [pandas](https://pandas.pydata.org/), [Polars](https://pola.rs/), [PyArrow](https://arrow.apache.org/) | обработка данных демо | BSD-3-Clause / MIT / Apache-2.0 |
 | [PyInstaller](https://pyinstaller.org/) | сборка .exe | GPL-2.0 с исключением для собранных программ |
 | Шрифт [Russo One](https://fonts.google.com/specimen/Russo+One) | логотип | SIL OFL 1.1 (`cs2keys/fonts/OFL-RussoOne.txt`) |
+| Шрифт [Oswald](https://fonts.google.com/specimen/Oswald) (статические начертания «Oswald CS2K») | заголовки интерфейса | SIL OFL 1.1 (`cs2keys/fonts/OFL-Oswald.txt`) |
+| Шрифт [Exo 2](https://fonts.google.com/specimen/Exo+2) (статические начертания «Exo 2 CS2K») | текст интерфейса | SIL OFL 1.1 (`cs2keys/fonts/OFL-Exo2.txt`) |
 
 Counter-Strike 2, CS2 и Valve — товарные знаки Valve Corporation. Программа не связана с Valve
 и не одобрена ею.

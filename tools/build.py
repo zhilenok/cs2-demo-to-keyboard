@@ -29,6 +29,11 @@ def main():
         "--distpath", os.path.join(ROOT, "dist"),
         "--specpath", os.path.join(ROOT, "build"),
     ]
+    # polars 2.x держит свою часть в отдельном модуле (_polars_runtime_32 …) — добавляем тот, что установлен
+    import importlib.util
+    for mod in ("_polars_runtime_32", "_polars_runtime_64", "_polars_runtime_compat", "polars_runtime_32"):
+        if importlib.util.find_spec(mod) is not None:
+            args[args.index("--workpath"):args.index("--workpath")] = ["--collect-all", mod]
     PyInstaller.__main__.run(args)
     exe = os.path.join(ROOT, "dist", NAME + (".exe" if os.name == "nt" else ""))
     if not os.path.exists(exe):

@@ -15,6 +15,8 @@ NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 # код -> (заголовок, подсказки)
 CODES = {
+    "E000": ("Отчёт по запросу",
+             ["Опишите в сообщении, что было не так, и вставьте этот отчёт (Ctrl+V)."]),
     "E101": ("Steam не запущен",
              ["Откройте Steam и войдите в аккаунт.",
               "Потом снова нажмите «Запустить CS2 и демо»."]),
@@ -154,6 +156,16 @@ def console_tail(cs2_exe, n=40):
     return _hide_user(head + "\n" + "\n".join(lines))
 
 
+def demo_version_mismatch(text):
+    """(версия демо, версия CS2), если в консоли CS2 есть строка «Demo is version X, client is version Y» и X≠Y."""
+    m = None
+    for m in re.finditer(r"Demo is version (\d+), client is version (\d+)", text or ""):
+        pass
+    if m and m.group(1) != m.group(2):
+        return m.group(1), m.group(2)
+    return None
+
+
 def build_report(code, detail="", context=None, cs2_exe=None, history=None):
     """Текст отчёта для автора. context — словарь «что происходило»."""
     out = [f"CS2 Demo to Keyboard {VERSION} — отчёт об ошибке",
@@ -175,8 +187,16 @@ def build_report(code, detail="", context=None, cs2_exe=None, history=None):
     if history:
         out.append("")
         out.append("Последние шаги программы:")
-        out += [f"  {h}" for h in history[-15:]]
+        out += [f"  {h}" for h in history[-80:]]
     tail = console_tail(cs2_exe)
+    ver = demo_version_mismatch(tail)
+    if ver and code in ("E103", "E104", "E105", "E107"):
+        hint = (f"демо записано на другой версии CS2 ({ver[0]}, у вас {ver[1]}). Проверьте эту демку без программы "
+                f"(консоль CS2: playdemo): если она вылетает и так — это ошибка самой игры на этой записи, "
+                f"программа обойти её не может. Попробуйте другую демку")
+        out.append("")
+        out.append(f"Версия демо: {ver[0]}, версия CS2: {ver[1]}")
+        out.append(f"Возможная причина: {hint}")
     if tail:
         out.append("")
         out.append("Консоль CS2 (последние строки):")

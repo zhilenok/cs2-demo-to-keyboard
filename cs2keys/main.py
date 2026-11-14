@@ -19,7 +19,7 @@ CACHE_DIR = os.path.join(DATA_DIR, "cache")
 SETTINGS = os.path.join(DATA_DIR, "settings.json")
 DEFAULTS = {"port": 2121, "offset": 0, "wait": 3.0, "speed": 1.0, "scale": 1.0, "alpha": 0.95,
             "overlay_pos": [80, 80], "overlay_on": True, "overlay_transparent": True, "follow": True, "binds_on": True, "saved_binds": {}, "voice": "off", "chat": False, "vpanel_on": True, "vpanel_pos": [80, 420], "vpanel_scale": 1.0,
-            "move_target": "kb", "lang": "ru", "hotkeys": {}, "cs2_keys": {}, "cs2_exe": "", "use_tools": True, "unmute_demo": True, "probe": 1.0,
+            "move_target": "kb", "lang": "ru", "hotkeys": {}, "cs2_keys": {}, "cs2_exe": "", "use_tools": True, "unmute_demo": True, "probe": 1.0, "show_speed": True, "kb_style": "glass",
             "last_dir": ""}
 # бинды, которые программа прописывает в CS2 при подключении (и возвращает старые при выходе)
 DEMO_BINDS = [("KP_5", "demo_togglepause", "пауза"),
@@ -102,6 +102,11 @@ def _scan_job(path):
 def _extract_job(path, steamid, info):
     _quiet()
     return extract.extract_player(path, steamid, info)
+
+
+def _extract_all_job(path, info):
+    _quiet()
+    return extract.extract_all(path, info)
 
 
 class App:
@@ -308,6 +313,9 @@ class App:
         ttk.Label(row, text="Сдвиг", style="Muted.TLabel").pack(side="right", padx=(12, 6))
         # что двигают площадка, стрелки и колесо
         self.target_var = tk.StringVar(value=self.s.get("move_target", "kb"))
+        self.vtr_var = tk.BooleanVar(value=bool(self.s.get("vpanel_transparent", self.s.get("overlay_transparent", True))))
+        self.valpha_var = tk.DoubleVar(value=float(self.s.get("vpanel_alpha", self.s.get("alpha", 0.95))))
+        self.vmove_var = tk.BooleanVar(value=False)
         tgt = ttk.Frame(row)
         tgt.pack(side="right", padx=(0, 8))
         ttk.Label(tgt, text="Двигать:", style="Muted.TLabel").pack(anchor="w")
@@ -344,11 +352,17 @@ class App:
         r.bind("<Prior>", lambda e: self.prev_round())
         r.bind("<Next>", lambda e: self.next_round())
 
+    def _log(self, text):
+        """Запись только в журнал отчёта (в строке статуса не показывается)."""
+        hist = self.__dict__.setdefault("_hist", [])
+        hist.append(time.strftime("%H:%M:%S ") + str(text))
+        del hist[:-120]
+
     def msg(self, text):
         hist = self.__dict__.setdefault("_hist", [])
         if not hist or not hist[-1].endswith(" " + str(text)):
             hist.append(time.strftime("%H:%M:%S ") + str(text))
-            del hist[:-30]
+            del hist[:-120]
         self.msg_lbl.configure(text=tr(text))
 
     # ================= ошибки с кодами =================
@@ -438,6 +452,7 @@ class App:
         except Exception:
             pass
         phase = getattr(self, "_phase", "watch")
+        threading.Timer(8.0, self._cleanup_cs2_files).start()   # после отчёта об ошибке журнал уже не нужен
         if phase == "loading" and time.time() - getattr(self, "_phase_t", 0) > 90:
             phase = "watch"
         proc = getattr(self, "_cs2_proc", None)
@@ -469,6 +484,7 @@ class App:
         self.open_demo_path(path)
 
     def open_demo_path(self, path):
+        self.all_data = None
         self.s["last_dir"] = os.path.dirname(path)
         save_settings(self.s)
         cache = self._cache_name(path, f"scan.v{extract.FORMAT_VERSION}.json")
@@ -557,6 +573,7 @@ class App:
         self.open_keys_path(path)
 
     def open_keys_path(self, path):
+        self.all_data = None
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
@@ -608,7 +625,7 @@ class App:
                           bg=PANEL if won else BG, fg=INK if won else (LOSS if won is False else MUTED),
                           activebackground="#CDBB98", font=("Segoe UI", 9, "bold"),
                           highlightthickness=2, highlightbackground=LOSS if won is False else LINE,
-                          command=lambda r=rd: self.seek(r["f"] - 3 * TPS))
+                          command=lambda r=rd: self.seek(self._round_start(r)))
             b.grid(row=i // 16, column=i % 16, padx=2, pady=2)
             self.round_btns.append(b)
         wins = sum(1 for r in self.rounds if r.get("won"))
@@ -619,7 +636,7 @@ class App:
         for b in (self.play_btn, self.resync_btn, self.save_btn, self.cam_btn, self.load_btn):
             b.configure(state="normal")
         self.playing = False
-        self.tick = float(self.rounds[0]["f"] - 3 * TPS) if self.rounds else float(self.t0)
+        self.tick = float(self._round_start(self.rounds[0])) if self.rounds else float(self.t0)
         self._ensure_overlay(rebuild=True)
         self._ensure_vpanel()
         self._paint_speed()
@@ -713,6 +730,10 @@ class App:
         if alive and mask >> 15 & 1:
             tag = (tag + "   примерно").strip()
         if self.overlay:
+            nm = (self.data or {}).get("player", "")
+            if getattr(self.overlay, "player", None) != nm:
+                self.overlay.set_player(nm)
+            self.overlay.set_speed(self._speed_text(t, mask))
             self.overlay.update_state(mask, weapon, tag)
         if self.vpanel:
             self.vpanel.update_state(self._speakers_at(t))
@@ -759,10 +780,20 @@ class App:
             return self.msg("CS2 не подключена: клавиатура играет без игры.")
         if self.syncing:
             return
+        left = 5.0 - (time.time() - getattr(self, "_load_t", 0))
+        if getattr(self, "_phase", None) == "loading" and left > 0:
+            # демо только что открылось: CS2 ещё сама перематывается в начало — запускаем чуть позже
+            if not getattr(self, "_play_wait", None):
+                self.msg("CS2 ещё открывает демо — запущу через секунду…")
+                self._play_wait = self.root.after(int(left * 1000) + 300, self._play_after_load)
+            return
         self.syncing, self.playing, self.clean = True, False, False
+        self._user_sync_t = time.time()
+        if getattr(self, "_phase", None) == "loading":
+            self._set_phase("watch")
         self._update_play_btn()
         t = int(self.tick)
-        tick = t + int(self.offset_var.get() or 0)
+        tick = max(self._min_tick(), t + int(self.offset_var.get() or 0))
         wait = max(0.5, min(20.0, float(self.wait_var.get() or 3)))
         frm = getattr(self, "_seek_from", None)
         if frm is not None and 0 <= t - frm <= 180 * TPS:
@@ -779,7 +810,8 @@ class App:
                 if not self.net.ping():
                     raise ConnectionError("CS2 не выполняет команды (нет ответа на проверку)")
                 seq = self.net.mark()
-                self.net.send("engine_no_focus_sleep 0", f"demo_timescale {speed:g}",
+                # сначала пауза: иначе CS2 после перемотки сразу играет дальше, пока мы ждём, и убегает вперёд
+                self.net.send("engine_no_focus_sleep 0", f"demo_timescale {speed:g}", "demo_pause",
                               f"demo_gototick {tick} 0 1", "echo SYNC_SEEK")
                 self.net.wait_for("SYNC_SEEK", seq, 3)
                 time.sleep(wait)
@@ -831,8 +863,47 @@ class App:
         off = self._gt_off() + int(self.offset_var.get() or 0)
         t = gt - off
         now = time.perf_counter()
+        if kind != "action" and abs(t - self.tick) > 2 * TPS and not self.syncing:
+            self._log(f"[CS2] {kind} на тике {t}, у программы {int(self.tick)}, играет={self.playing}")
+        if self._cs2_jumped_to_start(t):
+            self._log("[CS2] сама ушла в разминку после загрузки — ставлю обратно")
+            # Первые секунды после загрузки CS2 сама прыгает в начало записи (разминка) и перебивает
+            # нашу перемотку на раунд. Не идём за ней, а ещё раз ставим её на выбранный момент.
+            was = self.playing or getattr(self, "_resync_after_jump", False)
+            self.cs_tick, self.clean = None, False
+            self._probe_paused = None
+            if not getattr(self, "_jump_job", None):
+                self._resync_after_jump = was
+
+                def fix():
+                    self._jump_job = None
+                    if self._resync_after_jump:
+                        self.play_synced()
+                    else:
+                        self._send_bg(f"demo_gototick {max(self._min_tick(), int(self.tick))} 0 1")
+                self._jump_job = self.root.after(300, fix)
+            return
         if kind == "paused":
             if self.syncing:
+                return
+            if self._at_demo_start(t):
+                # Демо только что загрузилось и CS2 стоит в самом начале записи (разминка, первые тики).
+                # Раньше программа «догоняла» CS2 сюда и потом просто снимала паузу — на этом CS2 вылетала
+                # (0xc0000005, «skipping to demo tick 0»). Теперь оставляем выбранный раунд, CS2 держим на паузе,
+                # а по ▶ перематываем её на раунд командой demo_gototick — так, как работает со 2-го раунда.
+                self._probe_paused = None
+                self.cs_tick, self.clean = None, False
+                if self.playing:
+                    self.playing = False
+                    self._update_play_btn()
+                if not getattr(self, "_auto_seeked", False):
+                    # Демо открылось. Первые секунды CS2 сама прыгает в начало записи и запускает её —
+                    # в это время её не трогаем, а потом программа просто идёт за CS2 (см. _end_loading).
+                    self._auto_seeked = True
+                    self._load_t = time.time()
+                    self.root.after(6000, self._end_loading)
+                    self.msg("Демо загружено. Смотрите в CS2 — клавиатура пойдёт за ней, "
+                             "или выберите раунд и нажмите ▶.")
                 return
             pp = getattr(self, "_probe_paused", None)
             if pp and ts - pp < 1.0 and not self.playing:
@@ -877,6 +948,9 @@ class App:
                 self._update_play_btn()
             self._render(force=True)
         else:  # unpaused
+            if self._at_demo_start(t) and not self.syncing:
+                self._probing = False
+                return
             if getattr(self, "_probing", False):
                 self._probing = False
             elif not self.playing and not self.syncing:
@@ -889,6 +963,48 @@ class App:
             # опорная точка для замера скорости: не моложе 1,2 с, иначе при частой сверке замер неточный
             if self.last_probe is None or ts - self.last_probe[1] >= 1.2 or gt < self.last_probe[0]:
                 self.last_probe = (gt, ts)
+
+    def _play_after_load(self):
+        self._play_wait = None
+        self.play_synced()
+
+    def _speed_text(self, t, mask):
+        """Скорость игрока для подписи под клавиатурой: «250 u/s» (юниты в секунду, как в CS2)."""
+        vel = (self.data or {}).get("vel")
+        if not vel or not self.s.get("show_speed", True) or not (mask >> 14 & 1):
+            return ""
+        i = (int(t) - vel["t0"]) // vel["step"]
+        v = vel["v"]
+        if not 0 <= i < len(v):
+            return ""
+        return f"{v[i]} u/s"
+
+    def _min_tick(self):
+        """Раньше этого тика CS2 не перематываем: у самого начала записи нет полного кадра,
+        и перемотка туда роняет CS2."""
+        return int((self.data or {}).get("start") or 0) + 2 * TPS
+
+    def _end_loading(self):
+        """Загрузка демо закончилась: дальше программа следит за CS2 как обычно (клавиатура идёт за ней).
+        Раньше программа ждала нажатия ▶ в своём окне, а CS2 тем временем играла сама — и они расходились."""
+        if getattr(self, "_phase", None) == "loading" and not self.syncing:
+            self._set_phase("watch")
+            self._log("[загрузка] закончилась — программа следит за CS2")
+
+    def _cs2_jumped_to_start(self, t):
+        """CS2 сама ушла в разминку сразу после того, как мы поставили её на выбранный раунд (▶ / F8)."""
+        if self.syncing or getattr(self, "_phase", None) == "loading" or not self.rounds:
+            return False
+        if time.time() - getattr(self, "_user_sync_t", 0) > 10:
+            return False
+        first = self.rounds[0]["s"]
+        return t < first and self.tick >= first
+
+    def _at_demo_start(self, t):
+        """CS2 стоит в начале записи сразу после загрузки демо (до первого раунда)."""
+        if getattr(self, "_phase", None) != "loading" or not self.rounds:
+            return False
+        return t < self.rounds[0]["s"]
 
     def _probe_ms(self):
         try:
@@ -904,7 +1020,9 @@ class App:
         ползунком в самой игре), она ответит «paused on tick N», мы сразу продолжим и догоним.
         Если CS2 и правда на паузе, команда ничего не меняет."""
         try:
-            if (self.data and not self.syncing and self.follow_var.get()
+            # Пока демо загружается, CS2 не трогаем: пауза в момент загрузки записи роняла CS2
+            # («skipping to demo tick 0», 0xc0000005). Сверка начнётся после первого ▶.
+            if (self.data and not self.syncing and self.follow_var.get() and getattr(self, "_phase", None) != "loading"
                     and self._gt_off() is not None and self._cs2()):
                 if self.playing:
                     self._probing = True
@@ -928,8 +1046,10 @@ class App:
     def resume(self):
         if not self._cs2():
             return self.play_synced()
-        if not self.clean:
+        if not self.clean or self.cs_tick is None:
             return self.play_synced()
+        if time.time() - getattr(self, "_load_cmd_t", 0) < 60:
+            return self.play_synced()          # первый запуск после загрузки — всегда с точной перемоткой
         self.clean = False
 
         def job():
@@ -976,8 +1096,8 @@ class App:
     def _seek_cs2(self):
         self.seek_job = None
         self.cs_tick = int(self.tick)
-        tick = self.cs_tick + int(self.offset_var.get() or 0)
-        self._send_bg(f"demo_gototick {tick} 0 1")
+        tick = max(self._min_tick(), self.cs_tick + int(self.offset_var.get() or 0))
+        self._send_bg("demo_pause", f"demo_gototick {tick} 0 1")
 
     def _timeline_moved(self, v):
         if not self._scale_busy:
@@ -1011,15 +1131,22 @@ class App:
     def _round_index(self):
         return self._round_at(int(self.tick)) if self.rounds else 0
 
+    def _round_start(self, r):
+        """Куда прыгать в начало раунда: за 3 с до конца закупки, но не раньше начала самого раунда.
+        Если в демо нет события конца закупки (бывает у 1-го раунда), f совпадает с началом матча,
+        и «минус 3 секунды» уводило в разминку перед рестартом — CS2 на такой перемотке падает."""
+        f, st = int(r["f"]), int(r.get("s", 0))
+        return max(f - 3 * TPS, st + TPS)
+
     def next_round(self):
         if not self.data or not self.rounds:
             return
         i = self._round_index()
         # если мы ещё до конца закупки текущего раунда — «вперёд» ведёт к его началу
-        target = i if self.tick < self.rounds[i]["f"] - 3 * TPS - 32 else i + 1
+        target = i if self.tick < self._round_start(self.rounds[i]) - 32 else i + 1
         if target >= len(self.rounds):
             return self.msg("Это последний раунд.")
-        self.seek(self.rounds[target]["f"] - 3 * TPS)
+        self.seek(self._round_start(self.rounds[target]))
         self.msg(f"Раунд {self.rounds[target]['n']}")
 
     def prev_round(self):
@@ -1027,9 +1154,9 @@ class App:
             return
         i = self._round_index()
         # если раунд идёт больше 3 секунд — сначала в его начало, повторное нажатие — в прошлый
-        start = self.rounds[i]["f"] - 3 * TPS
+        start = self._round_start(self.rounds[i])
         target = i if self.tick > start + 3 * TPS else max(0, i - 1)
-        self.seek(self.rounds[target]["f"] - 3 * TPS)
+        self.seek(self._round_start(self.rounds[target]))
         self.msg(f"Раунд {self.rounds[target]['n']}")
 
     def _send_quiet(self, *cmds):
@@ -1092,6 +1219,11 @@ class App:
         cmd = 'playdemo "%s"' % path.replace("\\", "/")
 
         self._set_phase("loading")
+        self._start_hint = False
+        self._auto_seeked = False
+        self._load_cmd_t = time.time()
+        self._load_t = time.time()             # ▶ в первые секунды подождёт, пока CS2 откроет демо
+        self.root.after(40000, self._end_loading)   # запасной вариант, если CS2 не сообщила о загрузке
 
         def job():
             try:
@@ -1101,8 +1233,8 @@ class App:
                 bad = self.net.demo_problems(seq)
                 if bad:
                     self.ui(lambda: self.show_error("E107", "CS2 ответила: " + bad[-1]))
-                else:
-                    self.ui(lambda: self.msg("Демо загружается в CS2. Когда пойдёт, нажмите «Играть»."))
+                    return
+                self.ui(lambda: self.msg("Демо загружается в CS2. Когда пойдёт, нажмите «Играть»."))
             except Exception as e:
                 self.ui(lambda: self.msg("Ошибка: " + str(e)))
         self._bg(job)
@@ -1172,6 +1304,11 @@ class App:
             self._unmute_players()
             self.ui(lambda: self.msg("Запускаю CS2 с параметрами для демо…"))
             self._set_phase("launch")
+            self._gsi_prepare(exe)
+            log = launcher.console_log_path(exe)
+            if not os.path.exists(log) or self.s.get("condebug_log") == log:
+                self.s["condebug_log"] = log      # файл создаём мы — потом удалим; чужой журнал не трогаем
+                save_settings(self.s)
             self._cs2_proc = launcher.launch_cs2(exe, self.net.port, tools=bool(self.s.get("use_tools", True)))
             self._launched_by_us = True
             start = time.time()
@@ -1197,6 +1334,8 @@ class App:
                 raise errors.CodedError("E106", "консольный порт не открылся за 400 с")
             # игра открыла порт, ждём, пока консоль начнёт выполнять команды
             self.ui(lambda: self.msg("CS2 запущена, загружаю демо…"))
+            # CS2 прочитала файл GSI при старте — убираем его из её папки, он больше не нужен
+            threading.Timer(15.0, self._gsi_remove).start()
             for _ in range(60):
                 try:
                     if self.net.ping(timeout=2):
@@ -1397,9 +1536,9 @@ class App:
                 self.restore_binds(wait=True)
             self.apply_binds()
 
-    # ================= уборка после старой функции GSI =================
+    # ================= камера CS2 (Game State Integration) =================
     def gsi_cleanup(self):
-        """Функция GSI убрана: если её файл остался в папке CS2 — удаляем."""
+        """При старте: убираем файл GSI от прошлых версий и включаем приёмник сообщений CS2 о камере."""
         try:
             from . import gsi
             gsi.remove_cfg(gsi.cfg_dir(launcher.find_cs2_exe(self.s.get("cs2_exe"))))
@@ -1408,6 +1547,114 @@ class App:
         had = [self.s.pop(k, None) for k in ("gsi_on", "gsi_token")]
         if any(v is not None for v in had):
             save_settings(self.s)
+        self._cleanup_cs2_files()                 # хвосты от прошлого запуска (если программу закрыли аварийно)
+        self.observed = None
+        try:
+            from . import gsi
+            self.gsi = gsi.Listener(lambda sid, name: self.ui(lambda: self._camera_changed(sid, name)))
+            # токен постоянный: если программу перезапустили при открытой CS2, её сообщения всё равно примутся
+            if not self.s.get("cam_token"):
+                self.s["cam_token"] = self.gsi.token
+                save_settings(self.s)
+            self.gsi.token = self.s["cam_token"]
+            if not self.gsi.start():
+                self.gsi = None
+        except Exception:
+            self.gsi = None
+
+    def _gsi_prepare(self, exe):
+        """Перед запуском CS2: файл GSI в её папку cfg (CS2 читает его только при старте)."""
+        if not getattr(self, "gsi", None):
+            return
+        try:
+            from . import gsi
+            gsi.write_cfg(gsi.cfg_dir(exe), self.gsi.port, self.gsi.token)
+        except Exception:
+            traceback.print_exc()
+
+    def _gsi_remove(self):
+        try:
+            from . import gsi
+            gsi.remove_cfg(gsi.cfg_dir(launcher.find_cs2_exe(self.s.get("cs2_exe"))))
+        except Exception:
+            pass
+
+    def _cleanup_cs2_files(self):
+        """Убираем всё, что программа добавляла в папку CS2: файл GSI и журнал консоли (-condebug).
+        Журнал удаляем только когда CS2 закрыта (пока она работает, файл занят)."""
+        self._gsi_remove()
+        log = self.s.get("condebug_log")
+        if log and not launcher.cs2_running():
+            try:
+                if os.path.exists(log):
+                    os.remove(log)
+                self.s.pop("condebug_log", None)
+                save_settings(self.s)
+            except OSError:
+                pass
+
+    def _camera_changed(self, steamid, name):
+        """CS2 сообщила, на ком камера (при переключении и раз в секунду). В режиме «все игроки» клавиатура
+        переходит на этого игрока, если сейчас показывает другого."""
+        changed = steamid != getattr(self, "observed", None)
+        if changed:
+            self._log(f"[камера] CS2 → {name or steamid}, тик программы {int(self.tick)}")
+        self.observed = steamid
+        alld = getattr(self, "all_data", None)
+        if alld and steamid in alld:
+            if (self.data or {}).get("steamid") == steamid:
+                return
+            # Когда игрока убивают, CS2 может за долю секунды перебрать несколько игроков —
+            # переключаемся на того, на ком камера остановилась (через 0,2 с).
+            # Важно: повторные сообщения о ТОМ ЖЕ игроке таймер не сбрасывают. Раньше сбрасывали, а CS2 во время
+            # боя (дым, флешки, урон) шлёт сообщения чаще, чем раз в 0,2 с, — и переключение не наступало никогда.
+            job = getattr(self, "_cam_job", None)
+            if job and getattr(self, "_cam_pending", None) == steamid:
+                return
+            if job:
+                self.root.after_cancel(job)
+            self._cam_pending = steamid
+
+            def apply():
+                self._cam_job = None
+                if self.observed == steamid and (self.data or {}).get("steamid") != steamid:
+                    self._switch_player(steamid, from_camera=True)
+            self._cam_job = self.root.after(200, apply)
+            return
+        if changed:
+            self.msg(f"Камера: {name or steamid}")
+
+    def _switch_player(self, steamid, from_camera=False):
+        """Режим «все игроки»: клавиатура переходит на другого игрока без перемотки и паузы."""
+        d = (getattr(self, "all_data", None) or {}).get(steamid)
+        if not d:
+            return
+        t_sw = time.perf_counter()
+        self.data = d
+        rle = d["rle"]
+        self.T, self.M = rle[0::2], rle[1::2]
+        self.WT, self.WI = d["wr"][0::2], d["wr"][1::2]
+        self.GT = [g[0] for g in d["gr"]]
+        self.rounds = d["rounds"]
+        self._prev_t, self._latch, self._cam_prev = None, {}, None
+        self._after_switch(d)
+        if self._cs2():
+            cmds = list(self._voice_cmds()) if self.s.get("voice") in ("mine", "enemy") else []
+            if not from_camera:
+                cmds.append(self._spec_cmd(d["player"]))
+            if cmds:
+                self._send_bg(*cmds)
+        self.msg(f"Клавиатура: {d['player']}")
+        self._render(force=True)
+        self._log(f"[клавиатура] → {d['player']} ({'камера' if from_camera else 'клик'}), "
+                  f"{(time.perf_counter() - t_sw) * 1000:.0f} мс, тик {int(self.tick)}, играет={self.playing}")
+
+    def _after_switch(self, d):
+        """Обновить подписи после смены игрока (в новом интерфейсе — переопределено)."""
+        try:
+            self.cam_btn.configure(text=f"Камера на {d['player']} (F6)")
+        except Exception:
+            pass
 
     # ================= бинды в CS2 =================
     def _binds_changed(self):
@@ -1490,21 +1737,48 @@ class App:
         if not self.ov_var.get() or not self.data:
             return
         if self.overlay is None:
-            self.overlay = Overlay(self.root, extract.KEYS + [], scale=float(self.scale_var.get()),
+            cls = Overlay
+            if self.s.get("kb_style", "glass") == "glass":
+                try:
+                    from .overlay_glass import GlassOverlay
+                    cls = GlassOverlay
+                except Exception:
+                    cls = Overlay
+            self.overlay = cls(self.root, extract.KEYS + [], scale=float(self.scale_var.get()),
                                    alpha=float(self.alpha_var.get()), pos=self.s["overlay_pos"],
                                    on_moved=self._overlay_moved, transparent=bool(self.tr_var.get()),
                                    on_scaled=self._overlay_scaled)
             self.overlay.on_press = lambda: self.msg("Клавиатура захвачена — тащите.")
+            if list(self.s.get("overlay_pos") or []) == [80, 80]:      # ещё не двигали — ставим на место по умолчанию
+                self.root.after(150, lambda: self.default_place("kb", quiet=True))
+            ov = self.overlay
+            def check(ov=ov):
+                if self.overlay is not ov:
+                    return
+                self._log(f"[клавиатура] {ov.info()}")
+                if getattr(ov, "diag", None):
+                    self.msg(f"Стекло не включилось ({ov.diag}) — клавиатура показана упрощённо. "
+                             f"Пришлите этот текст автору.")
+            self.root.after(4000, check)
             self.overlay.set_unlocked(self.move_var.get())
 
     def _ensure_vpanel(self):
         if not self.vp_var.get() or not self.data or not self.data.get("speakers") or self.vpanel is not None:
             return
-        self.vpanel = VoicePanel(self.root, scale=float(self.s.get("vpanel_scale", 1.0)),
-                                 alpha=float(self.alpha_var.get()), pos=self.s.get("vpanel_pos", [80, 420]),
-                                 on_moved=self._vpanel_moved, transparent=bool(self.tr_var.get()),
-                                 on_scaled=self._vpanel_scaled)
-        self.vpanel.set_unlocked(self.move_var.get())
+        cls = VoicePanel
+        if self.s.get("kb_style", "glass") == "glass":
+            try:
+                from .overlay_glass import GlassVoicePanel
+                cls = GlassVoicePanel
+            except Exception:
+                cls = VoicePanel
+        self.vpanel = cls(self.root, scale=float(self.s.get("vpanel_scale", 1.0)),
+                          alpha=float(self.valpha_var.get()), pos=self.s.get("vpanel_pos", [80, 420]),
+                          on_moved=self._vpanel_moved, transparent=bool(self.vtr_var.get()),
+                          on_scaled=self._vpanel_scaled)
+        self.vpanel.set_unlocked(self.vmove_var.get())
+        if list(self.s.get("vpanel_pos") or []) == [80, 420]:
+            self.root.after(150, lambda: self.default_place("voice", quiet=True))
 
     def _vpanel_toggle(self):
         self.s["vpanel_on"] = bool(self.vp_var.get())
@@ -1562,9 +1836,26 @@ class App:
                 audible = (mode == "all" or (mode == "t" and side == 2) or (mode == "ct" and side == 3)
                            or (mode == "mine" and side == me_side) or (mode == "enemy" and side not in (None, me_side)))
                 if audible:                    # на панели только выбранная команда (те, кого слышно)
-                    out.append((s["name"], side, audible, s["steamid"] == self.data.get("steamid")))
+                    out.append((s["name"], side, audible, s["steamid"] == self.data.get("steamid"),
+                                s["steamid"], s.get("color")))
         out.sort(key=lambda x: (x[1] or 9, x[0].lower()))
         return out[:VoicePanel.ROWS]
+
+    def set_kb_style(self, style):
+        """Вид клавиатуры поверх игры: glass — «Стекло» (компактная), classic — прежняя."""
+        if style == self.s.get("kb_style", "glass"):
+            return
+        self.s["kb_style"] = style
+        save_settings(self.s)
+        if self.overlay:
+            self.overlay.destroy()
+            self.overlay = None
+        self._ensure_overlay(rebuild=True)
+        if self.vpanel:
+            self.vpanel.destroy()
+            self.vpanel = None
+            self._ensure_vpanel()
+        self._render(force=True)
 
     def _overlay_toggle(self):
         self.s["overlay_on"] = bool(self.ov_var.get())
@@ -1590,18 +1881,67 @@ class App:
         self.overlay.set_unlocked(True)
         self.msg("Клавиатура в центре экрана. Тащите за любое место, размер — за зелёный уголок, "
                  "потом снимите «Переместить».")
+        self._log(f"[клавиатура] {self.overlay.info()}")
 
     def _overlay_transparent(self):
         self.s["overlay_transparent"] = bool(self.tr_var.get())
         save_settings(self.s)
-        for w in (self.overlay, self.vpanel):
-            if w:
-                w.set_transparent(bool(self.tr_var.get()))
+        if self.overlay:
+            self.overlay.set_transparent(bool(self.tr_var.get()))
 
     def _overlay_move(self):
-        for w in (self.overlay, self.vpanel):
+        if self.overlay:
+            self.overlay.set_unlocked(self.move_var.get())
+
+    # ---------- панель голоса: свои настройки ----------
+    def _vpanel_transparent(self):
+        self.s["vpanel_transparent"] = bool(self.vtr_var.get())
+        save_settings(self.s)
+        if self.vpanel:
+            self.vpanel.set_transparent(bool(self.vtr_var.get()))
+
+    def _vpanel_move(self):
+        if self.vmove_var.get():
+            self._ensure_vpanel()
+        if self.vpanel:
+            self.vpanel.set_unlocked(self.vmove_var.get())
+        elif self.vmove_var.get():
+            self.msg("Панель голоса появится, когда в демо есть голос и включено «Показывать».")
+
+    def _vpanel_alpha(self):
+        v = round(float(self.valpha_var.get()), 2)
+        self.s["vpanel_alpha"] = v
+        if self.vpanel:
+            self.vpanel.set_alpha(v)
+        save_settings(self.s)
+
+    def _vpanel_find(self):
+        if not self.vp_var.get():
+            self.vp_var.set(True)
+            self._vpanel_toggle()
+        self._ensure_vpanel()
+        if self.vpanel is None:
+            return self.msg("Панель голоса появится, когда в демо есть голос игроков.")
+        self.vpanel.center()
+        self.vmove_var.set(True)
+        self.vpanel.set_unlocked(True)
+        self.msg("Панель голоса в центре экрана. Тащите её, размер — за зелёный уголок.")
+
+    def default_place(self, target, quiet=False):
+        """Место по умолчанию: клавиатура — снизу по центру (над полоской здоровья CS2),
+        панель голоса — слева посередине."""
+        if target == "voice":
+            self._ensure_vpanel()
+            w = self.vpanel
             if w:
-                w.set_unlocked(self.move_var.get())
+                w.move_to(0.0, 0.5, margin=24)
+        else:
+            self._ensure_overlay()
+            w = self.overlay
+            if w:
+                w.move_to(0.5, 0.8, margin=24)
+        if w and not quiet:
+            self.msg("Поставлено на место по умолчанию.")
 
     def _overlay_moved(self, x, y):
         self.s["overlay_pos"] = [x, y]
@@ -1646,7 +1986,7 @@ class App:
             self.scale_var.set(v)
             self._overlay_scale()
         else:
-            v = round(max(0.5, min(1.8, w.scale + 0.05 * d)), 2)
+            v = round(max(w.SCALE_MIN, min(w.SCALE_MAX, w.scale + 0.05 * d)), 2)
             w.set_scale(v)
             self._vpanel_scaled(v)
 
@@ -1675,9 +2015,8 @@ class App:
     def _overlay_alpha(self):
         v = round(float(self.alpha_var.get()), 2)
         self.s["alpha"] = v
-        for w in (self.overlay, self.vpanel):
-            if w:
-                w.set_alpha(v)
+        if self.overlay:
+            self.overlay.set_alpha(v)
         save_settings(self.s)
 
     # ================= горячие клавиши Windows =================
@@ -1723,6 +2062,7 @@ class App:
 
     def _quit(self):
         """Закрытие: возвращаем настройки CS2."""
+        self._gsi_remove()
         if self.s.get("saved_binds") and self._cs2():
             self.restore_binds(wait=True)
         # CS2, запущенную программой, закрываем: параметры для демо действуют только на этот запуск
@@ -1738,11 +2078,12 @@ class App:
                     pass
         save_settings(self.s)
         try:
-            for _ in range(10):                   # CS2 закрывается — ждём и возвращаем мут игроков
-                if not voiceban.pending() or not launcher.cs2_running():
+            for _ in range(12):                   # CS2 закрывается — ждём, потом убираем свои файлы
+                if not launcher.cs2_running():
                     break
                 time.sleep(0.5)
             self._restore_mutes()
+            self._cleanup_cs2_files()
         except Exception:
             pass
         try:

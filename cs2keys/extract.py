@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 TPS = 64
-FORMAT_VERSION = 10
+FORMAT_VERSION = 15
 
 # (бит в сырой команде клиента usercmd_buttonstate_1, ключ). Порядок = номер бита в нашей маске.
 BITS = [(3, "W"), (9, "A"), (4, "S"), (10, "D"), (1, "SPACE"), (2, "CTRL"), (16, "SHIFT"),
@@ -37,6 +37,9 @@ def _parser(path):
     return DemoParser(path)
 
 
+SERVICE_NAMES = {"FREELOOK", "GOTV", "SOURCETV"}
+
+
 def scan(path):
     """Быстрый обзор демо: карта, игроки, раунды."""
     p = _parser(path)
@@ -50,7 +53,12 @@ def scan(path):
         sid = str(r["steamid"])
         if sid in ("0", "None", "nan") or not str(r["name"]).strip():
             continue
-        players.append({"name": str(r["name"]), "steamid": sid, "team": int(r.get("team_number", 0) or 0)})
+        team = int(r.get("team_number", 0) or 0)
+        real = sid.startswith("7656119") and len(sid) == 17
+        if str(r["name"]).strip().upper() in SERVICE_NAMES and not (real and team in (2, 3)):
+            continue                               # служебная камера FACEIT/GOTV, а не игрок
+        # (игрок может назвать себя «FREELOOK» — его оставляем: у него настоящий SteamID и команда Т/КТ)
+        players.append({"name": str(r["name"]), "steamid": sid, "team": team})
 
     ends = []
     try:
@@ -109,7 +117,34 @@ def scan(path):
 
     end = (ends[-1][0] + 5 * TPS) if ends else 0
     return {"path": os.path.abspath(path), "map": header.get("map_name", ""), "players": players,
-            "rounds": rounds, "end": end, "voice": voice_intervals(p)}
+            "rounds": rounds, "end": end, "voice": voice_intervals(p), "colors": _player_colors(p, rounds)}
+
+
+def _player_colors(p, rounds):
+    """Цвет игрока в CS2 (жёлтый/фиолетовый/зелёный/синий/оранжевый = 0..4) — для панели «кто говорит»."""
+    if not rounds:
+        return {}
+    try:
+        df = p.parse_ticks(["player_color"], ticks=sorted({r["f"] for r in rounds}))
+    except Exception:
+        return {}
+    names = {"yellow": 0, "purple": 1, "green": 2, "blue": 3, "orange": 4}
+    out = {}
+    for _, r in df.iterrows():
+        sid, c = str(r.get("steamid")), r.get("player_color")
+        if sid in ("0", "nan", "None"):
+            continue
+        # demoparser2 отдаёт цвет словом («purple»), на всякий случай понимаем и число
+        if isinstance(c, str):
+            v = names.get(c.strip().lower())
+        else:
+            try:
+                v = int(c) if c is not None and c == c and 0 <= int(c) <= 4 else None
+            except (TypeError, ValueError):
+                v = None
+        if v is not None:
+            out[sid] = v                               # берём последнее известное значение
+    return out
 
 
 HANDLE_PROP = "CCSPlayerController.m_hOriginalControllerOfCurrentPawn"
@@ -173,16 +208,97 @@ def _rle(ticks, values):
     return out
 
 
-def extract_player(path, steamid, info=None):
+class _Src:
+    """Откуда брать данные. Для одного игрока — запросы только по нему. Для всех игроков (all=True) каждый
+    запрос делается один раз сразу по всем, а потом раскладывается по SteamID: демка читается не 10 раз, а 1."""
+
+    def __init__(self, p, all_players=False):
+        self.p, self.all, self.cache = p, all_players, {}
+
+    def ticks(self, props, sid):
+        if not self.all:
+            return self.p.parse_ticks(props, players=[sid])
+        key = ("t",) + tuple(props)
+        if key not in self.cache:
+            try:
+                df = self.p.parse_ticks(props)
+                self.cache[key] = {str(k): g for k, g in df.groupby(df["steamid"].astype(str))}
+            except Exception as e:
+                self.cache[key] = e
+        got = self.cache[key]
+        if isinstance(got, Exception):
+            raise got
+        import pandas as pd
+        return got.get(str(sid), pd.DataFrame(columns=["tick", "steamid"] + list(props)))
+
+    def event(self, name):
+        key = ("e", name)
+        if key not in self.cache:
+            try:
+                self.cache[key] = self.p.parse_event(name)
+            except Exception as e:
+                self.cache[key] = e
+        got = self.cache[key]
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    def game_time(self, probe):
+        key = ("g", tuple(probe))
+        if key not in self.cache:
+            self.cache[key] = self.p.parse_ticks(["game_time"], ticks=probe)
+        return self.cache[key]
+
+
+def extract_all(path, info=None):
+    """Нажатия всех игроков демки за один проход: {steamid: данные как у extract_player}."""
+    info = info or scan(path)
+    src = _Src(_parser(path), all_players=True)
+    out = {}
+    for pl in info["players"]:
+        try:
+            out[pl["steamid"]] = extract_player(path, pl["steamid"], info, src=src)
+        except Exception:
+            pass                                   # игрок без данных (зритель, вышел до начала) — пропускаем
+    return out
+
+
+VEL_STEP = 4          # скорость храним 16 раз в секунду — для подписи под клавиатурой этого достаточно
+
+
+def _velocity(src, sid, t0, t1):
+    """Горизонтальная скорость игрока (юниты в секунду), каждые VEL_STEP тиков: {"t0", "step", "v"}."""
+    try:
+        import numpy as np
+        d = src.ticks(["velocity_X", "velocity_Y"], sid)
+        d = d.sort_values("tick").drop_duplicates("tick")
+        if d.empty:
+            return None
+        grid = np.arange(t0, t1 + 1, VEL_STEP)
+        idx = np.searchsorted(d["tick"].to_numpy(), grid, side="right") - 1
+        ok = idx >= 0
+        vx = d["velocity_X"].to_numpy(dtype=float)
+        vy = d["velocity_Y"].to_numpy(dtype=float)
+        sp = np.zeros(len(grid))
+        sp[ok] = np.hypot(vx[idx[ok]], vy[idx[ok]])
+        sp = np.nan_to_num(sp)
+        sp[sp > 1200] = 0                         # телепорты при возрождении/перемотке — не скорость
+        return {"t0": int(t0), "step": VEL_STEP, "v": [int(round(x)) for x in sp]}
+    except Exception:
+        return None
+
+
+def extract_player(path, steamid, info=None, src=None):
     """Нажатия, оружие, выстрелы, гранаты, убийства одного игрока. Возвращает словарь для JSON."""
     info = info or scan(path)
-    p = _parser(path)
+    src = src or _Src(_parser(path))
+    p = src.p
     sid = int(steamid)
     name = next((pl["name"] for pl in info["players"] if pl["steamid"] == str(steamid)), str(steamid))
 
     # Сырые команды читаем ОТДЕЛЬНЫМ запросом: вместе с другими полями парсер «протягивает»
     # последнее значение через пропуски, и, например, отпущенный пробел выглядит зажатым 15 секунд.
-    d = p.parse_ticks(["is_alive", "is_airborne", "active_weapon_name"], players=[sid])
+    d = src.ticks(["is_alive", "is_airborne", "active_weapon_name"], sid)
     d = d.sort_values("tick").drop_duplicates("tick").reset_index(drop=True)
     if d.empty:
         raise ValueError("В демо нет данных по этому игроку")
@@ -193,7 +309,7 @@ def extract_player(path, steamid, info=None):
         """Поля игрока по тем же тикам. Если в демо таких полей нет — пустая таблица (без падения)."""
         import pandas as pd
         try:
-            x = p.parse_ticks(props, players=[sid])
+            x = src.ticks(props, sid)
         except Exception:
             x = None
         if x is None or "tick" not in getattr(x, "columns", ()):
@@ -237,7 +353,7 @@ def extract_player(path, steamid, info=None):
 
     sh, gr = [], []
     try:
-        ev = p.parse_event("weapon_fire")
+        ev = src.event("weapon_fire")
         ev = ev[ev["user_steamid"].astype(str) == str(steamid)]
         for t, wpn in zip(ev["tick"], ev["weapon"].astype(str)):
             if wpn in GRENADES:
@@ -248,7 +364,7 @@ def extract_player(path, steamid, info=None):
         pass
     kills, deaths = [], []
     try:
-        k = p.parse_event("player_death")
+        k = src.event("player_death")
         kills = [int(t) for t in k[k["attacker_steamid"].astype(str) == str(steamid)]["tick"]]
         deaths = [int(t) for t in k[k["user_steamid"].astype(str) == str(steamid)]["tick"]]
     except Exception:
@@ -258,7 +374,7 @@ def extract_player(path, steamid, info=None):
     gt_off = None
     try:
         probe = [int(x) for x in np.linspace(ticks[0], ticks[-1], 7)]
-        g = p.parse_ticks(["game_time"], ticks=probe).drop_duplicates("tick")
+        g = src.game_time(probe).drop_duplicates("tick")
         vals = sorted(int(round(gt * TPS - t)) for t, gt in zip(g["tick"], g["game_time"]) if gt == gt)
         if vals:
             gt_off = vals[len(vals) // 2]
@@ -286,10 +402,13 @@ def extract_player(path, steamid, info=None):
                        "won": (team == r["winner"]) if team in (2, 3) else None,
                        "t_slots": sorted(t_sl), "ct_slots": sorted(ct_sl)})
 
+    vel = _velocity(src, sid, int(ticks[0]), int(ticks[-1]))
+
     return {"format": "cs2keys", "version": FORMAT_VERSION, "precise": bool(precise),
             "demo_path": info["path"], "demo_name": os.path.basename(info["path"]), "map": info["map"],
             "player": name, "steamid": str(steamid), "tps": TPS, "keys": KEYS,
             "rle": _rle(ticks, mask), "wn": wn, "wr": wr, "sh": sh, "gr": gr, "kills": kills, "deaths": deaths,
-            "rounds": rounds, "gt_off": gt_off, "start": int(ticks[0]),
-            "speakers": [{"name": pl["name"], "steamid": pl["steamid"], "iv": vi.get(pl["steamid"], [])}
+            "rounds": rounds, "gt_off": gt_off, "start": int(ticks[0]), "vel": vel,
+            "speakers": [{"name": pl["name"], "steamid": pl["steamid"], "iv": vi.get(pl["steamid"], []),
+                          "color": (info.get("colors") or {}).get(pl["steamid"])}
                          for pl in info["players"]], "end": max(int(ticks[-1]), info["end"])}

@@ -165,3 +165,9 @@ def launch_cs2(exe, port=2121, tools=True):
     # -condebug: CS2 пишет свою консоль в game/csgo/console.log — по нему видно, на чём она упала
     args += ["-netconport", str(int(port)), "-insecure", "-novid", "-condebug"]
     return subprocess.Popen(args, cwd=os.path.dirname(exe))
+
+
+def console_log_path(cs2_exe):
+    """…/game/bin/win64/cs2.exe → …/game/csgo/console.log (его пишет параметр -condebug)."""
+    game = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(cs2_exe))))
+    return os.path.join(game, "csgo", "console.log")

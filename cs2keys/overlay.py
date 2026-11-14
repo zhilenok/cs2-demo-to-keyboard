@@ -42,6 +42,7 @@ def rrect(c, x0, y0, x1, y1, r, **kw):
 
 class Overlay(tk.Toplevel):
     KEY_COLOR = "#010101"      # почти чёрный ключ прозрачности: края текста дают тёмную тень, а не цветную кайму
+    SCALE_MIN, SCALE_MAX = 0.5, 1.8
     def __init__(self, master, keys, scale=1.0, alpha=0.95, pos=(80, 80), on_moved=None, transparent=True,
                  on_scaled=None):
         super().__init__(master)
@@ -172,7 +173,16 @@ class Overlay(tk.Toplevel):
         self.tag_text = c.create_text(pad, sy, text="", fill=TAG_JUMP, anchor="w", font=tag_font)
         self.warn_shadow = c.create_text(W - pad + 2, sy + 2, text="", fill="#0b0b0b", anchor="e", font=tag_font)
         self.warn_text = c.create_text(W - pad, sy, text="", fill=TAG_WARN, anchor="e", font=tag_font)
-        H = sy + 0.35 * u + pad
+        # ник игрока — мелко под клавиатурой
+        ny = sy + 0.42 * u
+        name_font = ("Segoe UI", max(7, int(u * 0.24)), "bold")
+        nm = getattr(self, "player", "") or ""
+        self.name_shadow = c.create_text(pad + 1, ny + 1, text=nm, fill="#0b0b0b", anchor="w", font=name_font)
+        self.name_text = c.create_text(pad, ny, text=nm, fill=CAPTION, anchor="w", font=name_font)
+        sp = getattr(self, "speed", "") or ""
+        self.speed_shadow = c.create_text(W - pad + 1, ny + 1, text=sp, fill="#0b0b0b", anchor="e", font=name_font)
+        self.speed_text = c.create_text(W - pad, ny, text=sp, fill=CAPTION, anchor="e", font=name_font)
+        H = ny + 0.2 * u + pad
         # режим перемещения: рамка, подпись посередине и уголок для размера
         self.move_frame = c.create_rectangle(2, 2, W - 2, H - 2, outline=GO, width=3, dash=(8, 5), state="hidden")
         self.move_label_bg = rrect(c, W / 2 - 2.6 * u, H / 2 - 0.3 * u, W / 2 + 2.6 * u, H / 2 + 0.3 * u, 0.2 * u,
@@ -239,6 +249,22 @@ class Overlay(tk.Toplevel):
                 c.move(it["face"], 0, dy)
                 c.move(it["text"], 0, dy)
                 it["down"] = on
+
+    def set_speed(self, text):
+        """Скорость игрока под клавиатурой справа (пустая строка — не показывать)."""
+        if text == getattr(self, "speed", None):
+            return
+        self.speed = text
+        for it in (getattr(self, "speed_text", None), getattr(self, "speed_shadow", None)):
+            if it:
+                self.canvas.itemconfigure(it, text=text)
+
+    def set_player(self, name):
+        """Ник игрока под клавиатурой."""
+        self.player = name or ""
+        for it in (getattr(self, "name_text", None), getattr(self, "name_shadow", None)):
+            if it:
+                self.canvas.itemconfigure(it, text=self.player)
 
     # ---------- настройки ----------
     def set_scale(self, scale):
@@ -369,7 +395,7 @@ class Overlay(tk.Toplevel):
             return
         if self._resize:
             x0, w0, s0 = self._resize
-            ns = max(0.5, min(1.8, s0 * (w0 + e.x_root - x0) / w0))
+            ns = max(self.SCALE_MIN, min(self.SCALE_MAX, s0 * (w0 + e.x_root - x0) / w0))
             if abs(ns - self.scale) > 0.015:
                 self.scale = ns
                 if self._rebuild_job is None:         # перестраиваем не чаще раза в 40 мс
@@ -422,6 +448,7 @@ T_COL, CT_COL = "#e0a33a", "#5b9bd5"        # цвета сторон как в 
 class VoicePanel(Overlay):
     """Панель «кто говорит» — отдельное прозрачное окно, двигается так же, как клавиатура."""
     ROWS = 5
+    SCALE_MIN, SCALE_MAX = 0.4, 2.5
     # почти чёрный цвет-ключ: сглаженные края текста смешиваются с ним в тёмную «тень», а не в розовую кайму
     KEY_COLOR = "#010101"
 
@@ -491,7 +518,7 @@ class VoicePanel(Overlay):
         for i, items in enumerate(self.row_items):
             bg, bar, spk, arc1, txt = items
             if i < len(speakers):
-                name, side, audible, me = speakers[i]
+                name, side, audible, me = speakers[i][:4]
                 for it in items:
                     c.itemconfigure(it, state="normal")
                 col = T_COL if side == 2 else CT_COL if side == 3 else "#888888"

@@ -5,6 +5,37 @@ import re
 LANG = "ru"
 
 EN = {
+    "Настроить": "Adjust",
+    "Клавиатуру": "Keyboard",
+    "снизу по центру": "bottom centre",
+    "слева посередине": "left, middle",
+    "Зажмите и тащите": "Hold and drag",
+    "Поставлено на место по умолчанию.": "Moved to the default place.",
+    "Панель голоса в центре экрана. Тащите её, размер — за зелёный уголок.": "The voice panel is in the centre of the screen. Drag it; resize with the green corner.",
+    "Панель голоса появится, когда в демо есть голос игроков.": "The voice panel appears when the demo has player voice.",
+    "Панель голоса появится, когда в демо есть голос и включено «Показывать».": "The voice panel appears when the demo has voice and “Show” is on.",
+    "Голос и чат": "Voice & chat",
+    "Клавиатура в игре": "Keyboard in game",
+    "тик": "tick",
+    "СМЕНА СТОРОН": "SIDE SWITCH",
+    "Синхр.": "Sync",
+    "Раунд": "Round",
+    "Вид": "Style",
+    "Стекло (компактная)": "Glass (compact)",
+    "Классическая": "Classic",
+    "Недавние": "Recent",
+    "Перетащите": "Drag",
+    "Скорость игрока под клавиатурой": "Player speed under the keyboard",
+    "Скопировать отчёт для автора": "Copy report for the author",
+    "Отчёт по запросу": "Report on request",
+    "Опишите в сообщении, что было не так, и вставьте этот отчёт (Ctrl+V).": "Describe what went wrong and paste this report (Ctrl+V).",
+    "Отчёт скопирован — вставьте его в комментарии Telegram-канала (Ctrl+V).": "Report copied — paste it into the Telegram channel comments (Ctrl+V).",
+    "Все игроки сразу — клавиатура следует за камерой CS2": "All players at once — the keyboard follows the CS2 camera",
+    "Извлекаю нажатия всех игроков… около минуты": "Extracting all players' inputs… about a minute",
+    "Все игроки: переключайте камеру в CS2 — клавиатура пойдёт за ней. Или выбирайте игрока здесь.": "All players: switch the camera in CS2 and the keyboard follows. Or pick a player here.",
+    "CS2 ещё открывает демо — запущу через секунду…": "CS2 is still opening the demo — starting in a moment…",
+    "Сообщить о баге": "Report a bug",
+    "Не помогло? Нажмите «Сообщить о баге»: отчёт скопируется, а в Telegram-канале останется вставить его в комментарии (Ctrl+V). В отчёте нет личных данных.": "Didn't help? Press “Report a bug”: the report is copied, then just paste it into the Telegram channel comments (Ctrl+V). The report contains no personal data.",
     "Сверка с CS2, раз в": "Sync check with CS2 every",
     "Чаще — клавиатура точнее держится за игрой, но CS2 каждый раз встаёт на паузу на долю кадра: на слабом ПК возможны микрорывки и щелчки в голосе.": "More often keeps the keyboard closer to the game, but CS2 pauses for a split frame each time: on a weak PC this may cause micro-stutters and clicks in voice.",
     "Слышать замученных игроков в демо (мут вернётся после закрытия CS2)": "Hear muted players in demos (the mute returns after CS2 closes)",
@@ -254,6 +285,12 @@ def tr(s):
     m = re.fullmatch(r"Временно сняли мут с игроков демо: (\d+)\. После закрытия CS2 мут вернётся\.", s)
     if m:
         return f"Temporarily unmuted demo players: {m.group(1)}. The mute returns after CS2 closes."
+    m = re.fullmatch(r"Клавиатура: (.+)", s, flags=re.S)
+    if m:
+        return "Keyboard: " + m.group(1)
+    m = re.fullmatch(r"Камера: (.+)", s, flags=re.S)
+    if m:
+        return "Camera: " + m.group(1)
     m = re.fullmatch(r"код выхода (0x[0-9a-fA-F]+)", s)
     if m:
         return "exit code " + m.group(1)
